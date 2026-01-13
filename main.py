@@ -5,8 +5,9 @@ class Node:
     def __init__(self, name, num_nodes):
         self.name = name
         self.data = [name + str(i) for i in range(num_nodes)]
+        self.buffer = [None] * num_nodes
 
-class RingAllReduce:
+class StaticSR:
     def __init__(self, num_nodes, node_latency, link_latency, skip, shift, print_steps):
         self.num_nodes = num_nodes
         self.node_latency = node_latency
@@ -51,6 +52,74 @@ class RingAllReduce:
             total_latency += per_step_latency
             if self.print_steps:
                 print(f"Step {step + 1} latency: {per_step_latency}")
+                for node in self.nodes:
+                    print(f"Node {node.name}: {node.data}")
+
+        # Final data state
+        print("\nFinal data at each node:")
+        for node in self.nodes:
+            print(f"Node {node.name}: {node.data}")
+
+        # Total latency
+        print(f"Total latency: {total_latency}")
+
+class RandSR:
+    def __init__(self, num_nodes, node_latency, link_latency, skip, print_steps):
+        self.num_nodes = num_nodes
+        self.node_latency = node_latency
+        self.link_latency = link_latency
+        self.skip = skip
+        self.print_steps = print_steps
+        # Node as characters 'a' to 'z' (limited to 26 nodes)
+        self.nodes = [Node(chr(ord('a') + i), num_nodes) for i in range(num_nodes)]
+
+    def simulate(self):
+        print(f"Number of nodes: {self.num_nodes}.")
+        print(f"Node latencies: {self.node_latency}")
+        print(f"Link latencies: {self.link_latency}")
+        print(f"Skip steps: {self.skip}")
+        
+        # Ring AllReduce logic
+        STEPS = self.num_nodes - 1
+        total_latency = 0
+        # skip_indices = [[3], [3], [2], [0]]
+        skip_indices = [random.sample(range(self.num_nodes), self.skip) for _ in range(self.num_nodes)]
+        print(f"Skip indices per node: {skip_indices}")
+        for step in range(STEPS - self.skip):
+            per_step_node_latencies = []
+            per_step_link_latencies = []
+            if self.print_steps:
+                print(f"\n--- Step {step + 1} ---")
+            for i in range(self.num_nodes):
+                # Shift index
+                sender = self.nodes[i]
+                receiver = self.nodes[(i + 1) % self.num_nodes]
+                # Simulate sending data
+                data_index = (i - step) % self.num_nodes
+                if data_index in skip_indices[i]:
+                    data_index = (data_index + 1) % self.num_nodes  # Skip this index
+                data_to_send = sender.data[data_index]
+                receiver.buffer[data_index] = data_to_send
+                # Record latencies
+                per_step_node_latencies.append(self.node_latency[i])
+                per_step_link_latencies.append(self.link_latency[i])
+                if self.print_steps:
+                    print(f"Node {sender.name} sends {data_to_send} to Node {receiver.name}")
+            
+            # After all sends, update receiver data from buffer
+            for i in range(self.num_nodes):
+                receiver = self.nodes[i]
+                for j in range(self.num_nodes):
+                    if receiver.buffer[j] is not None:
+                        receiver.data[j] += receiver.buffer[j]
+                        receiver.buffer[j] = None
+
+            per_step_latency = max(per_step_node_latencies) + max(per_step_link_latencies)
+            total_latency += per_step_latency
+            if self.print_steps:
+                print(f"Step {step + 1} latency: {per_step_latency}")
+                for node in self.nodes:
+                    print(f"Node {node.name}: {node.data}")
 
         # Final data state
         print("\nFinal data at each node:")
@@ -63,12 +132,12 @@ class RingAllReduce:
 if __name__ == "__main__":
     # Get Ring AllReduce configuration
     parser = argparse.ArgumentParser(description="Ring AllReduce Simulation")
+    parser.add_argument("-m", "--mode", help="operation mode", choices=["static", "random", "exhaustive"], default="static")
     parser.add_argument("-n", "--num-nodes", help="number of nodes", default=5, type=int)
     parser.add_argument("--node-latency", help="comma-separated node latencies", default=None)
     parser.add_argument("--link-latency", help="comma-separated link latencies", default=None)
     parser.add_argument("--skip", help="number of skip steps", default=0, type=int)
     parser.add_argument("--shift", help="shift value for starting skip index", default=0, type=int)
-    parser.add_argument("--rand-shift", help="use random shift value", action="store_true")
     parser.add_argument("--print-steps", help="print each step", action="store_true")
     
     # Process configuration
@@ -78,7 +147,12 @@ if __name__ == "__main__":
     if len(node_latency) != num_nodes or len(link_latency) != num_nodes:
         raise ValueError("Length of node-latency and link-latency must match num-nodes")
     skip = parser.parse_args().skip
-    shift = parser.parse_args().shift if parser.parse_args().rand_shift == False else random.randint(0, num_nodes - 1)
+    shift = parser.parse_args().shift
     print_steps = parser.parse_args().print_steps
+    mode = parser.parse_args().mode
     
-    RingAllReduce(num_nodes, node_latency, link_latency, skip, shift, print_steps).simulate()
+    # Run simulation
+    if mode == "static":
+        StaticSR(num_nodes, node_latency, link_latency, skip, shift, print_steps).simulate()
+    elif mode == "random":
+        RandSR(num_nodes, node_latency, link_latency, skip, print_steps).simulate()
