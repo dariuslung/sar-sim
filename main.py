@@ -1,6 +1,5 @@
 import argparse
 import random
-import heapq
 import itertools
 
 class GPU:
@@ -31,8 +30,8 @@ class StaticSR:
         STEPS = self.num_gpu - 1
         total_latency = 0
         for step in range(STEPS - self.skip):
-            per_step_gpu_latencies = []
-            per_step_link_latencies = []
+            step_gpu_latencies = []
+            step_link_latencies = []
             if self.print_steps:
                 print(f"\n--- Step {step + 1} ---")
             for i in range(self.num_gpu):
@@ -40,29 +39,32 @@ class StaticSR:
                 sender = self.gpu[i]
                 receiver = self.gpu[(i + 1) % self.num_gpu]
                 # Simulate sending data
-                data_index = (i + self.shift - step) % self.num_gpu
-                data_to_send = sender.data[data_index]
-                sender.data[data_index] = None
-                receiver.data[data_index] += data_to_send
+                chunk_idx = (i + self.shift - step) % self.num_gpu
+                data_to_send = sender.data[chunk_idx]
+                sender.data[chunk_idx] = None
+                receiver.data[chunk_idx] += data_to_send
                 # Record latencies
-                per_step_gpu_latencies.append(self.gpu_latency[i])
-                per_step_link_latencies.append(self.link_latency[i])
+                step_gpu_latencies.append(self.gpu_latency[i])
+                step_link_latencies.append(self.link_latency[i])
                 if self.print_steps:
                     print(f"GPU {sender.name} sends {data_to_send} to GPU {receiver.name}")
 
-            per_step_gpu_latency = max(per_step_gpu_latencies)
-            per_step_link_latency = max(per_step_link_latencies)
-            total_latency += per_step_gpu_latency + per_step_link_latency
+            step_gpu_latency = max(step_gpu_latencies)
+            step_link_latency = max(step_link_latencies)
+            total_latency += step_gpu_latency + step_link_latency
             if self.print_steps:
-                print(f"Step {step + 1} latency: {per_step_gpu_latency} + {per_step_link_latency}")
+                for gpu in self.gpu:
+                    print(f"GPU {gpu.name}: {gpu.data}")
+                print(f"Step {step + 1} latency: {step_gpu_latency} + {step_link_latency}")
 
         # Final data state
-        print("\nFinal data at each GPU:")
-        for gpu in self.gpu:
-            print(f"GPU {gpu.name}: {gpu.data}")
+        if not self.print_steps:
+            print("\nFinal data at each GPU:")
+            for gpu in self.gpu:
+                print(f"GPU {gpu.name}: {gpu.data}")
 
         # Total latency
-        print(f"Total latency: {total_latency}")
+        print(f"\nTotal latency: {total_latency}")
 
 class RandSRAp1:
     def __init__(self, num_gpu, gpu_latency, link_latency, skip, print_steps):
@@ -83,12 +85,12 @@ class RandSRAp1:
         # Ring AllReduce logic
         STEPS = self.num_gpu - 1
         total_latency = 0
-        skip_indices = [[1], [1], [0], [1]]
-        # skip_indices = [random.sample(range(self.num_gpu), self.skip) for _ in range(self.num_gpu)]
+        # skip_indices = [[1], [1], [0], [1]]
+        skip_indices = [random.sample(range(self.num_gpu), self.skip) for _ in range(self.num_gpu)]
         print(f"Skip indices per GPU: {skip_indices}")
         for step in range(STEPS):
-            per_step_gpu_latencies = []
-            per_step_link_latencies = []
+            step_gpu_latencies = []
+            step_link_latencies = []
             if self.print_steps:
                 print(f"\n--- Step {step + 1} ---")
             for i in range(self.num_gpu):
@@ -96,14 +98,16 @@ class RandSRAp1:
                 sender = self.gpu[i]
                 receiver = self.gpu[(i + 1) % self.num_gpu]
                 # Simulate sending data
-                data_index = (i - step) % self.num_gpu
-                if data_index in skip_indices[i]:
-                    continue # GPU rests this step
-                data_to_send = sender.data[data_index]
-                receiver.buffer[data_index] = data_to_send
+                chunk_idx = (i - step) % self.num_gpu
+                if chunk_idx in skip_indices[i]:
+                    if self.print_steps:
+                        print(f"GPU {sender.name} IDLE")
+                    continue # GPU idle during this step
+                data_to_send = sender.data[chunk_idx]
+                receiver.buffer[chunk_idx] = data_to_send
                 # Record latencies
-                per_step_gpu_latencies.append(self.gpu_latency[i])
-                per_step_link_latencies.append(self.link_latency[i])
+                step_gpu_latencies.append(self.gpu_latency[i])
+                step_link_latencies.append(self.link_latency[i])
                 if self.print_steps:
                     print(f"GPU {sender.name} sends {data_to_send} to GPU {receiver.name}")
             
@@ -115,13 +119,13 @@ class RandSRAp1:
                         receiver.data[j] += receiver.buffer[j]
                         receiver.buffer[j] = None
 
-            per_step_gpu_latency = max(per_step_gpu_latencies)
-            per_step_link_latency = max(per_step_link_latencies)
-            total_latency += per_step_gpu_latency + per_step_link_latency
+            step_gpu_latency = max(step_gpu_latencies)
+            step_link_latency = max(step_link_latencies)
+            total_latency += step_gpu_latency + step_link_latency
             if self.print_steps:
-                print(f"Step {step + 1} latency: {per_step_gpu_latency} + {per_step_link_latency}")
                 for gpu in self.gpu:
                     print(f"GPU {gpu.name}: {gpu.data}")
+                print(f"Step {step + 1} latency: {step_gpu_latency} + {step_link_latency}")
 
         # Final data state
         if not self.print_steps:
@@ -151,12 +155,12 @@ class RandSRAp2:
         # Ring AllReduce logic
         STEPS = self.num_gpu - 1
         total_latency = 0
-        skip_indices = [[1], [1], [0], [1]]
-        # skip_indices = [random.sample(range(self.num_gpu), self.skip) for _ in range(self.num_gpu)]
+        # skip_indices = [[1], [1], [0], [1]]
+        skip_indices = [random.sample(range(self.num_gpu), self.skip) for _ in range(self.num_gpu)]
         print(f"Skip indices per GPU: {skip_indices}")
         for step in range(STEPS - self.skip):
-            per_step_gpu_latencies = []
-            per_step_link_latencies = []
+            step_gpu_latencies = []
+            step_link_latencies = []
             if self.print_steps:
                 print(f"\n--- Step {step + 1} ---")
             for i in range(self.num_gpu):
@@ -164,14 +168,14 @@ class RandSRAp2:
                 sender = self.gpu[i]
                 receiver = self.gpu[(i + 1) % self.num_gpu]
                 # Simulate sending data
-                data_index = (i - step) % self.num_gpu
-                if data_index in skip_indices[i]:
-                    data_index = (data_index + 1) % self.num_gpu  # Skip this index
-                data_to_send = sender.data[data_index]
-                receiver.buffer[data_index] = data_to_send
+                chunk_idx = (i - step) % self.num_gpu
+                if chunk_idx in skip_indices[i]:
+                    chunk_idx = (chunk_idx + 1) % self.num_gpu  # Skip this index
+                data_to_send = sender.data[chunk_idx]
+                receiver.buffer[chunk_idx] = data_to_send
                 # Record latencies
-                per_step_gpu_latencies.append(self.gpu_latency[i])
-                per_step_link_latencies.append(self.link_latency[i])
+                step_gpu_latencies.append(self.gpu_latency[i])
+                step_link_latencies.append(self.link_latency[i])
                 if self.print_steps:
                     print(f"GPU {sender.name} sends {data_to_send} to GPU {receiver.name}")
             
@@ -183,12 +187,13 @@ class RandSRAp2:
                         receiver.data[j] += receiver.buffer[j]
                         receiver.buffer[j] = None
 
-            per_step_latency = max(per_step_gpu_latencies) + max(per_step_link_latencies)
-            total_latency += per_step_latency
+            step_gpu_latency = max(step_gpu_latencies)
+            step_link_latency = max(step_link_latencies)
+            total_latency += step_gpu_latency + step_link_latency
             if self.print_steps:
-                print(f"Step {step + 1} latency: {per_step_latency}")
                 for gpu in self.gpu:
                     print(f"GPU {gpu.name}: {gpu.data}")
+                print(f"Step {step + 1} latency: {step_gpu_latency} + {step_link_latency}")
 
         # Final data state
         if not self.print_steps:
@@ -199,6 +204,102 @@ class RandSRAp2:
         # Total latency
         print(f"\nTotal latency: {total_latency}")
 
+class ExhaustiveSR:
+    def __init__(self, num_gpu, gpu_latency, link_latency, skip, print_steps):
+        self.num_gpu = num_gpu
+        self.gpu_latency = gpu_latency
+        self.link_latency = link_latency
+        self.skip = skip  # Number of chunks to skip per GPU
+        self.print_steps = print_steps
+        self.gpu_names = [chr(ord('a') + i) for i in range(num_gpu)]
+
+    def simulate(self):
+        print(f"Number of GPUs: {self.num_gpu}.")
+        print(f"GPU latencies: {self.gpu_latency}")
+        print(f"Link latencies: {self.link_latency}")
+        print(f"Skip steps: {self.skip}")
+        
+        # 1. Generate all valid skip combinations for a SINGLE GPU
+        #    Example: If N=4, skip=1 -> [(0), (1), (2), (3)]
+        single_gpu_options = list(itertools.combinations(range(self.num_gpu), self.skip))
+        
+        # 2. Cartesian Product: Assign one option to each GPU
+        #    This creates the "Global Skip Configuration"
+        #    WARNING: Search space is (N choose K)^N. For N=4, K=1 -> 4^4 = 256 configs.
+        all_configurations = itertools.product(single_gpu_options, repeat=self.num_gpu)
+        
+        best_latency = float('inf')
+        best_config = None
+
+        # 3. Iterate through every possible skip configuration
+        for config in all_configurations:
+            # config is a tuple of tuples: ((skipped_chunks_gpu_a), (skipped_chunks_gpu_b), ...)
+            latency = self.evaluate_configuration(config)
+            
+            if latency < best_latency:
+                best_latency = latency
+                best_config = config
+        
+        # 4. Report Results
+        print(f"Skip indices per GPU: {best_config}")
+        
+        # Re-run the best one with printing enabled to show the trace
+        if self.print_steps:
+            print("\n--- Simulation Trace of Best Solution ---")
+            self.evaluate_configuration(best_config, debug=True)
+
+        print(f"\nMinimum Total Latency: {best_latency}")
+
+    def evaluate_configuration(self, skip_config, debug=False):
+        # The Fixed Ring AllReduce Schedule (N-1 Steps)
+        # Based on Standard Ring: Each step, GPU i sends chunk (i - step)
+        
+        steps = self.num_gpu - 1
+        total_latency = 0
+        
+        # Helper to check if a specific chunk is skipped by a specific GPU
+        # skip_config[gpu_id] contains a tuple of chunk_indices to skip
+        def is_skipped(gpu_id, chunk_idx):
+            return chunk_idx in skip_config[gpu_id]
+
+        for step in range(steps):
+            step_gpu_latencies = []
+            step_link_latencies = []
+            
+            if debug: print(f"\n--- Step {step + 1} ---")
+
+            # Determine activity for all GPUs in this step
+            for sender_idx in range(self.num_gpu):
+                # Standard Ring Logic: What chunk *should* I send now?
+                # Formula: (sender_rank - step) % N
+                chunk_idx = (sender_idx - step) % self.num_gpu
+                
+                # CHECK: Is this chunk in the skip list for this Sender?
+                if is_skipped(sender_idx, chunk_idx):
+                    # ACTION: Sleep / Send None
+                    if debug: print(f"  GPU {self.gpu_names[sender_idx]} -> IDLE (Skipping Chunk {chunk_idx})")
+                    step_gpu_latencies.append(0)   # No compute cost
+                    step_link_latencies.append(0)  # No link cost
+                else:
+                    # ACTION: Send Data
+                    receiver_idx = (sender_idx + 1) % self.num_gpu
+                    if debug: print(f"  GPU {self.gpu_names[sender_idx]} -> GPU {self.gpu_names[receiver_idx]} : Chunk {chunk_idx}")
+                    
+                    step_gpu_latencies.append(self.gpu_latency[sender_idx])
+                    step_link_latencies.append(self.link_latency[sender_idx])
+
+            # Calculate Step Latency (Bottleneck Analysis)
+            # The step takes as long as the SLOWEST active component
+            current_step_latency = 0
+            if step_gpu_latencies and step_link_latencies:
+                 # Assuming overlap: Max(GPU_time) + Max(Link_Time) 
+                 # Or if pipelined: Max(GPU_time + Link_Time). Adjust based on your model.
+                 # Using your previous model:
+                 current_step_latency = max(step_gpu_latencies) + max(step_link_latencies)
+            
+            total_latency += current_step_latency
+            
+        return total_latency
 
 if __name__ == "__main__":
     # Get Ring AllReduce configuration
@@ -229,3 +330,5 @@ if __name__ == "__main__":
         RandSRAp1(num_gpu, gpu_latency, link_latency, skip, print_steps).simulate()
     elif mode == "random2":
         RandSRAp2(num_gpu, gpu_latency, link_latency, skip, print_steps).simulate()
+    elif mode == "exhaustive":
+        ExhaustiveSR(num_gpu, gpu_latency, link_latency, skip, print_steps).simulate()
