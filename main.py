@@ -66,10 +66,10 @@ class StaticMode:
         # Total latency
         print(f"\nTotal latency: {total_latency}")
 
-# Random Mode 1
+# Random Mode
 # Each GPU randomly skips 'skip' chunks during the N-1 steps.
 # Skipped GPU is idle during that step.
-class RandomMode1:
+class RandomMode:
     def __init__(self, num_gpu, gpu_latency, link_latency, skip, print_steps):
         self.num_gpu = num_gpu
         self.gpu_latency = gpu_latency
@@ -90,7 +90,7 @@ class RandomMode1:
 
         # Randomly select skip indices for each GPU
         skip_indices = [random.sample(range(self.num_gpu), self.skip) for _ in range(self.num_gpu)]
-        skip_indices = [[1], [1], [0], [1]]
+        # skip_indices = [[1], [1], [0], [1]]
         print(f"Skip indices per GPU: {skip_indices}")
 
         # --- Step 1 ---
@@ -154,7 +154,10 @@ class RandomMode1:
                 step_gpu_latencies.append(self.gpu_latency[i])
                 step_link_latencies.append(self.link_latency[i])
                 if self.print_steps:
-                    print(f"GPU {sender.rank} -> GPU {receiver.rank} : Chunk {chr(ord('a') + chunk_idx)}")
+                    if chunk_idx in skip_indices[i]:
+                        print(f"  GPU {sender.rank} -> GPU {receiver.rank} : Chunk {chr(ord('a') + chunk_idx)} (No reduction)")
+                    else:
+                        print(f"  GPU {sender.rank} -> GPU {receiver.rank} : Chunk {chr(ord('a') + chunk_idx)}")
             
             # After all sends, update receiver data from buffer
             for i in range(self.num_gpu):
@@ -248,42 +251,63 @@ class ExhaustiveMode:
         total_latency = 0
         total_penalty = 0
 
+        # 1. Calculate Penalty ONCE based on the configuration
+        #    If GPU 'g' skips chunk 'c', we pay the penalty for 'c'.
+        for gpu_id in range(self.num_gpu):
+            for chunk_idx in skip_config[gpu_id]:
+                total_penalty += self.weights[chunk_idx]
+
         # Helper to check skips
         def is_skipped(gpu_id, chunk_idx):
             return chunk_idx in skip_config[gpu_id]
 
-        # A. Calculate Latency (Simulation)
+        # 2. Simulation Loop
         for step in range(steps):
             step_gpu_latencies = []
             step_link_latencies = []
-
-            if debug:
-                print(f"\n--- Step {step + 1} ---")
+            
+            if debug: print(f"\n--- Step {step + 1} ---")
             
             for sender_idx in range(self.num_gpu):
+                # Ring Logic
                 chunk_idx = (sender_idx - step) % self.num_gpu
+                receiver_idx = (sender_idx + 1) % self.num_gpu
                 
-                if is_skipped(sender_idx, chunk_idx):
-                    if debug:
-                        print(f"  GPU {sender_idx} -> IDLE (Skipping Chunk {chr(ord('a') + chunk_idx)})")
-                    step_gpu_latencies.append(0)
-                    step_link_latencies.append(0)
-                    # Accumulate Penalty
-                    total_penalty += self.weights[chunk_idx]
+                # --- LOGIC BRANCHING ---
+                
+                # CASE A: Step 1 (Initial Send)
+                if step == 0:
+                    # User Rule: "If sender chunk can be skipped, GPU does nothing"
+                    if is_skipped(sender_idx, chunk_idx):
+                        if debug: print(f"  GPU {sender_idx} -> IDLE (Skipping Chunk {chr(ord('a') + chunk_idx)})")
+                        step_gpu_latencies.append(0)
+                        step_link_latencies.append(0)
+                    else:
+                        if debug: print(f"  GPU {sender_idx} -> GPU {receiver_idx} : Chunk {chr(ord('a') + chunk_idx)}")
+                        step_gpu_latencies.append(self.gpu_latency[sender_idx])
+                        step_link_latencies.append(self.link_latency[sender_idx])
+
+                # CASE B: Step 2..N-1 (Relay & Reduce)
                 else:
-                    receiver_idx = (sender_idx + 1) % self.num_gpu
-                    if debug:
-                        print(f"  GPU {sender_idx} -> GPU {receiver_idx} : Chunk {chr(ord('a') + chunk_idx)}")
-                    step_gpu_latencies.append(self.gpu_latency[sender_idx])
-                    step_link_latencies.append(self.link_latency[sender_idx])
+                    # User Rule: "If receiver chunk can be skipped... incur only link latency"
+                    if is_skipped(receiver_idx, chunk_idx):
+                        if debug: print(f"  GPU {sender_idx} -> GPU {receiver_idx} : Chunk {chr(ord('a') + chunk_idx)} (No reduction)")
+                        step_gpu_latencies.append(0) # Skipped Compute
+                        step_link_latencies.append(self.link_latency[sender_idx]) # Paid Link
+                    else:
+                        if debug: print(f"  GPU {sender_idx} -> GPU {receiver_idx} : Chunk {chr(ord('a') + chunk_idx)}")
+                        step_gpu_latencies.append(self.gpu_latency[sender_idx])
+                        step_link_latencies.append(self.link_latency[sender_idx])
 
-            if step_gpu_latencies:
-                total_latency += max(step_gpu_latencies) + max(step_link_latencies)
-
-        # Note: Depending on your logic, you might only want to count the penalty 
-        # ONCE per chunk globally, or ONCE per skip action. 
-        # Currently, this counts it every time a skip action happens (per step).
-        
+            # 3. Calculate Step Latency (Parallelism)
+            #    We take the MAX of the components because they happen in parallel.
+            #    Lat = Max(All GPU Computes) + Max(All Link Transfers)
+            current_step_latency = 0
+            if step_gpu_latencies and step_link_latencies:
+                current_step_latency = max(step_gpu_latencies) + max(step_link_latencies)
+            
+            total_latency += current_step_latency
+            
         return total_latency, total_penalty
     
 
@@ -310,7 +334,7 @@ if __name__ == "__main__":
         StaticMode(num_gpu, gpu_latency, link_latency, skip, shift, print_steps).simulate()
     elif mode == "random":
         print("=== Random Mode ===")
-        RandomMode1(num_gpu, gpu_latency, link_latency, skip, print_steps).simulate()
+        RandomMode(num_gpu, gpu_latency, link_latency, skip, print_steps).simulate()
     elif mode == "exhaustive":
         importance_weights = [10, 10, 1, 1]
         penalty_factor = 1
